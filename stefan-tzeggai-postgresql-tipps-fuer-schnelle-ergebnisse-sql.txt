@@ -1,0 +1,170 @@
+Diese SQLs wurden im Vortrag live durchgespielt, gehört zu
+http://www.tuebix.org/2017/programm/stefan-tzeggai-postgresql-tipps-fuer-schnelle-ergebnisse/
+
+
+sudo su postgres
+cd
+dropdb tuebix;
+createdb tuebix; # create DB
+psql -d tuebix; # log into DB
+select version(); # check correct DB
+   PostgreSQL 9.6.3 on x86_64-pc-linux-gnu, 64-bit
+
+
+CREATE SCHEMA postgis;
+CREATE EXTENSION postgis schema postgis;
+
+SELECT PostGIS_full_version(); --FAIL!
+
+ALTER DATABASE tuebix SET search_path TO public,postgis;
+--logout.. login
+SELECT PostGIS_full_version(); --KLAPPT 
+
+
+
+CREATE TABLE earthquakes (datetime timestamptz NOT NULL, magnitude double precision NOT NULL, latlon geometry(Point,4326) NOT NULL);
+
+
+INSERT INTO earthquakes (datetime, magnitude, latlon)
+SELECT 
+ to_timestamp(EXTRACT(EPOCH FROM now()) - random()*100000000),
+ random()*5,
+ st_setSrid(ST_point(42.7+random()*0.04, 11.9+random()*0.08),4326)
+FROM generate_series(1,1000000);
+
+
+Let's see QGIS?! 
+Let's see QGIS?! 
+
+
+select count(1) from earthquakes where datetime::date = '2016-01-01';
+"Execution time: ~200 ms
+
+select avg(magnitude) from earthquakes where datetime::date = '2016-01-01';
+"Execution time: ~200 ms"
+
+select count(1), avg(magnitude) from earthquakes where datetime::date = '2016-01-01';
+"Execution time: ~200 ms"
+
+--JETZT noch ein 'magnitude > 3' dazu:
+select count(1), avg(magnitude) from earthquakes where datetime::date = '2016-01-01' and magnitude > 3;
+"Execution time: ~200 ms"
+
+-- FILTER
+select count(1), avg(magnitude),
+       count(1) FILTER (where magnitude >3), avg(magnitude) FILTER (where magnitude >3)
+ from earthquakes where datetime::date = '2016-01-01';
+ "Execution time: ~200 ms"
+
+
+
+
+
+
+
+
+
+-- Start first_agg
+https://wiki.postgresql.org/wiki/First/last_%28aggregate%29
+
+-- Create a function that always returns the first non-NULL item
+CREATE OR REPLACE FUNCTION public.first_agg1 ( anyelement, anyelement )
+RETURNS anyelement LANGUAGE SQL IMMUTABLE STRICT AS $$
+        SELECT $1;
+$$;
+ 
+-- And then wrap an aggregate around it
+CREATE AGGREGATE public.FIRST1 (
+        sfunc    = public.first_agg1,
+        basetype = anyelement,
+        stype    = anyelement
+);
+
+
+select first1(magnitude) firstMag, first1(datetime) firstDatetime from earthquakes where datetime::date = '2016-01-01';
+
+
+-- Hier sieht man wie LAHM das ist:
+select first1(magnitude) firstMag, first1(datetime) firstDatetime from earthquakes;
+
+
+https://explain.depesz.com
+
+
+
+
+
+
+
+pgxn install first_last_agg
+create extension first_last_agg;
+
+
+-- Hier sieht man den Unterschied! 
+select first1(magnitude) firstMag, first1(datetime) firstDatetime from earthquakes;
+--1900ms
+
+select first(magnitude) firstMag, first(datetime) firstDatetime from earthquakes;
+-- 200ms
+
+
+
+
+LUFT HOLEN! Es geht weiter!!!!
+
+
+
+-- TO_CHAR
+select to_char(datetime,'YYYY') as yyyy,  to_char(datetime,'YYYY-MM') as yyyymm, datetime::date as day, magnitude from earthquakes order by datetime limit 100 
+
+
+
+
+-- WITH...
+with 
+a as (select to_char(datetime,'YYYY') as yyyy,  to_char(datetime,'YYYY-MM') as yyyymm, datetime::date as day, magnitude from earthquakes order by datetime)
+select * from a;
+
+
+
+
+--  GROUP BY every day
+with 
+a as (select to_char(datetime,'YYYY') as yyyy, to_char(datetime,'YYYY-MM') as yyyymm, datetime::date as day, datetime, magnitude from earthquakes order by datetime)
+select yyyy, yyyymm, day, 
+       min(magnitude), avg(magnitude),
+       first(magnitude) firstMag, first(datetime) firstDatetime
+  from a 
+  group by yyyy,yyyymm,day
+  order by yyyy,yyyymm,day;
+
+
+
+
+-- Start ROLLUP
+with 
+a as (select to_char(datetime,'YYYY') as yyyy, to_char(datetime,'YYYY-MM') as yyyymm, datetime::date as day, datetime, magnitude from earthquakes order by datetime)
+select 
+       yyyy,yyyymm,day,
+       min(magnitude), avg(magnitude),
+       count(1) FILTER (where magnitude > 4) as greater4,
+       first(magnitude) firstMag, first(day) firstDatetime
+  from a 
+  group by rollup (yyyy,yyyymm,day)
+  order by yyyy,yyyymm,day;
+
+
+
+======Zurück zu Folie "Materialized Views"
+
+--- Start MATERIALIZED VIEWS, back to SLIDES
+create materialized view earthquake_stats as
+
+select * from earthquake_stats ;
+
+refresh materialized view earthquake_stats;
+
+refresh materialized view concurrently earthquake_stats;
+create unique index on earthquake_stats (day);
+
+======Zurück zu Folie refreshMatView.sh 
